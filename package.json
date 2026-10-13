@@ -1,0 +1,42 @@
+{
+  "name": "dsh-memory",
+  "version": "1.0.0",
+  "description": "Cross-session long-term memory in plain Markdown files, with zero extra LLM calls.",
+  "license": "MIT",
+  "author": "linshenyuan <206093871+linshenyuan@users.noreply.github.com>",
+  "repository": { "type": "git", "url": "git+https://github.com/linshenyuan/dsh-memory.git" },
+  "homepage": "https://github.com/linshenyuan/dsh-memory#readme",
+  "bugs": { "url": "https://github.com/linshenyuan/dsh-memory/issues" },
+  "keywords": ["dsh", "dsh-plugin", "memory", "long-term-memory", "markdown", "cordis", "ai-agent"],
+  "type": "module",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

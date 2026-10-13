@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Long-term memory",
+    "description": "Cross-session memory kept as plain Markdown files. Zero extra LLM calls: memory is no longer injected at session start — the model reads it on demand via memory_read and records via memory_save. Includes content dedupe, conflict freezing, and auditable replay, plus a settings page to browse entries by workspace, check usage, settle conflicts, and read the audit trail — and to edit, add, or delete entries directly."
+  }
+}

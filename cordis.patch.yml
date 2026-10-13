@@ -1,0 +1,16 @@
+# dsh-memory bundle patch.
+#
+# 这一层在 profile 的 bundles 里列出本包时被应用。装法：
+#   plugin_manager install_bundle，target 指向本目录的绝对路径。
+#
+# config 里只写要偏离默认值的项 —— 没写的走 lib/config.js 的 DEFAULTS。
+- insert:
+    - id: dsh-memory
+      name: 'dsh-memory'
+      config:
+        projectMemoryDir: .dsh-memory
+        writeReminder: true
+        conflictFreeze: true
+        sensitiveScan: true
+        auditEnabled: true
+        verifyOnStart: true
