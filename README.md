@@ -79,6 +79,10 @@ L2 / L3 的注入是 `user` 角色的消息，带一个 `source`：
 | 7 | 记审计 |
 | 8 | 重建 `CONFLICTS.md` |
 
+**整段 2→6（读 → 改 → 写）被 `lib/lock.js` 的「按文件串行化锁」包住。** 本插件有两个会读写同一份 `MEMORY.md` 的入口：模型的 `memory_save`，以及设置面板的 `edit` / `resolve`。没有这把锁时，两个入口各自读到同一版本、各自改，后写的会把先写的整个覆盖掉 —— 丢一条记忆，而两边都返回成功。`writeAtomic` 只保证「不写半截」，管不了这个，两者正交。
+
+锁是**进程内**的（promise 队列，key = 目标文件的绝对路径）：两个入口都跑在同一个 DSH 宿主进程里，所以不需要跨进程文件锁。边界写在 `lib/lock.js` 的文件头 —— 若将来有多个进程同开一个工作区，这里挡不住，那时才需要 OS 级文件锁或「写前比对 + 重试」。
+
 ### 去重
 
 每条记忆的指纹是 `sha256(normalize(topic) + NUL + normalize(content))`。归一化口径：NFKC → 转小写 → 去标点 → 空白折叠。topic 那一侧再折掉分隔符，所以 `indent-style`、`indent_style`、`Indent Style` 是同一个话题。
@@ -304,6 +308,7 @@ npm test
 - `manifest` —— **包清单契约**，`exports`（含 `./client`）/ `icon` / `locale` / `files` / `dsh.client` / 无依赖，对着 DSH 加载器的真实规则逐条校验
 - `ui-data` / `ui-resolve` / `ui-write` / `ui-rpc` / `ui-route` —— **面板各层**：聚合只读且四视图同源、A/B 定义与写回一致、`later` 不落痕迹、自由编辑的行级写回与 `by:"user"` 审计、审计记录能被 `replay` 读懂、端点信封形状严格、载荷里的 `cwd` 被忽略、HTTP 传输的状态码与信封形状（404 / 415 / 400 / `gateway/bad-request` / 500 / 200）与栅栏分支
 - `client-bundle` —— **客户端 bundle 格式**，在 `node:vm` 沙箱里把 `lib/client.js` 真跑一遍：注册形状、`id` 等于包名、无 ESM 语句、`require` 全部命中静态种子、槽注册参数、中英字典键集一致、CSS 只用主题变量
+- `lock` / `concurrency` —— **并发写入**：锁的串行化语义（后者等前者完全结束、不同 key 不互阻、出错不卡队列、空闲不泄漏），以及真实文件 IO 下的并发回归（两个入口同时新增不同条目 → 两条都必须留下、id 不撞）。这两组是「去掉锁就变红」的，刻意如此
 
 最有价值的是 `save` / `index` / `manifest` / `client-bundle` / `tool` 这几个：`save` 覆盖所有真实行为；`index` 抓「装进 DSH 之后才发现没生效」（section 名字写错、`order` 撞车、忘了 `interpolate: false`、钩子签名不对、声明了 form 却给不齐字段）；`manifest` 抓「图标和标题静默消失」；`client-bundle` 抓「设置页里干脆没有这一项」；`tool` 抓「工具参数写法违反 DSL，插件启动失败」——这一类失败全都**不报错**，只会静默地少一块。
 
@@ -352,6 +357,7 @@ lib/
   sanitize.js    敏感信息打码
   truncate.js    按 UTF-8 字节的安全截断
   store.js       原子读写
+  lock.js        进程内「按文件串行化」锁（防并发读改写丢更新）
   audit.js       审计流水与回放
   conflicts.js   CONFLICTS.md 与冲突摘要渲染
   client.js      【浏览器半侧】设置页的记忆面板（手写 client bundle）
