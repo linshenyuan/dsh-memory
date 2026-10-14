@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -146,6 +146,69 @@ test("mode=update：替换旧条目，不新增行", async () => {
   assert.equal(entries.length, 1);
   assert.equal(entries[0].content, "包管理器改用 pnpm。");
   assert.equal(entries[0].id, "m001");
+});
+
+test("mode=update 保留旧条目的 area（工作空间标签不被抹掉）", async () => {
+  const c = cfg();
+  // 直接落一份带 area:backend 的文件 —— memory_save 没有 area 参数，area 只能来自
+  // 面板手填或先前的文件；这里用文件模拟「已经整理好的记忆」。
+  const paths = resolveMemoryPaths(cwd, "project", c);
+  await mkdir(paths.dir, { recursive: true });
+  await writeFile(
+    paths.file,
+    [
+      "# 项目记忆",
+      "",
+      "## 约定",
+      "- 使用 PostgreSQL。 <!-- id:m001 topic:database at:2026-10-01 area:backend -->",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const result = await saveMemory({
+    cfg: c,
+    cwd,
+    input: {
+      topic: "database",
+      content: "改用 PostgreSQL 17。",
+      scope: "project",
+      mode: "update",
+    },
+  });
+  assert.equal(result.action, "updated");
+  assert.equal(result.id, "m001");
+
+  const entries = await entriesOf(c);
+  assert.equal(entries.length, 1, "同 topic 只有一条，没有被重复插入");
+  assert.equal(entries[0].content, "改用 PostgreSQL 17。", "正文换成新的");
+  assert.equal(entries[0].area, "backend", "area 必须原样保留，不因 update 抹掉");
+  assert.equal(entries[0].section, "约定", "段落在原处保留");
+
+  // 钉死格式：注释里 area: 只出现一次，且没有出现空 area / 重复追加。
+  const text = await readText(paths.file);
+  assert.equal(text.match(/area:/g)?.length ?? 0, 1);
+  assert.equal(text.includes("area: "), false, "不该产生空 area");
+});
+
+test("mode=update 时旧条目没有 area，也不该凭空造一个", async () => {
+  const c = cfg();
+  await saveMemory({
+    cfg: c,
+    cwd,
+    input: { topic: "indent-style", content: "缩进用 4 空格。", scope: "project", section: "约定" },
+  });
+  const result = await saveMemory({
+    cfg: c,
+    cwd,
+    input: { topic: "indent-style", content: "缩进用 2 空格。", scope: "project", mode: "update" },
+  });
+  assert.equal(result.action, "updated");
+
+  const entries = await entriesOf(c);
+  assert.equal(entries[0].area, null);
+  const text = await readText(resolveMemoryPaths(cwd, "project", c).file);
+  assert.equal(text.includes("area:"), false, "没有 area 的条目不该被补出空 area");
 });
 
 test("mode=new 且同 topic 内容不同 → 冻结为待裁决，两条都留着", async () => {
