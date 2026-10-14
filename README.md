@@ -145,12 +145,13 @@ A / B 的定义是确定的：按 `at` 升序排，**A = 最早那条**（通常
 
 ### 数据怎么从磁盘走到浏览器
 
-浏览器里的面板和磁盘上的文件之间只有一条通道：宿主侧在 `webServer` 上挂一条 `/dsh-memory` 前缀路由，浏览器侧 `ctx.connection.rpc.call("/dsh-memory", "snapshot" | "resolve" | "edit" | "settings", payload)` 发一条 POST 过去。四个端点：
+浏览器里的面板和磁盘上的文件之间只有一条通道：宿主侧在 `webServer` 上挂一条 `/dsh-memory` 前缀路由，浏览器侧 `ctx.connection.rpc.call("/dsh-memory", "snapshot" | "resolve" | "edit" | "settings" | "audit.clear", payload)` 发一条 POST 过去。五个端点：
 
 - `snapshot` —— 返回一次聚合结果，四个视图共用（`lib/ui/data.js`）
 - `resolve` —— 执行一次裁决（`lib/ui/resolve.js`）
 - `edit` —— 自由编辑：新增 / 修改 / 删除一条（`lib/ui/write.js`），行级编辑、不重写整个文件，并记 `by:"user"` 的审计
 - `settings` —— 改两个记忆上限（`lib/settings.js`）：校验 → 落盘 → **就地改共享的 `cfg` 对象**（见下）
+- `audit.clear` —— 面板「确认清除」一条审计记录（`lib/audit.js`）：按 `at` 删掉 `runs.jsonl` 里那一行，并追加一条 `clear` 标记（`origOp` 记被清的是哪类操作）。**只动流水、不删记忆**；`clear` 标记让启动自检 `verifyReplay` 在流水被有意裁剪后仍然报「一致」，不误报 `missing` / `orphan`
 
 **面板改的上限存在哪、为什么不用重启。** 值写进 `$DSH_HOME/dsh-memory.settings.json`（`lib/settings.js`）—— 这是**插件自管**的文件，不去动 DSH 的 profile 配置（那有被覆盖、注释丢失的风险）。合并顺序是 `DEFAULTS` ← `cordis.patch.yml` ← 这份覆盖文件，**面板优先**：你在插件配置里改过、又在面板里改，面板赢。生效靠的是「就地改那个共享的 `cfg` 对象」—— 工具、面板、钩子拿到的是**同一个引用**，所以改完立刻生效，不用重启。这个文件只认 `projectMaxBytes` / `userMaxBytes` 两个键，越权的键一律忽略。
 
@@ -370,7 +371,7 @@ lib/
     data.js      面板数据聚合（四个视图共用一次快照，只读）
     resolve.js   四个裁决动作的写回（行级编辑，不重写整个文件）
     write.js     自由编辑的写回（新增/修改/删除，行级编辑，记 by:user 审计）
-    rpc.js       面板的三个 RPC 端点（信封、参数校验、cwd 来源）
+    rpc.js       面板的五个 RPC 端点（信封、参数校验、cwd 来源）
     route.js     HTTP 传输层（挂前缀路由、复刻 rpcFetchHandler 的语义、请求栅栏）
 test/            244 个用例 + stubs/ + fixtures/ + loader.mjs
 ```

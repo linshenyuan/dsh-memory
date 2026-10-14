@@ -100,7 +100,7 @@ function assertFailEnvelope(result, code) {
 test("channel 与端点名都符合宿主的准入规则", () => {
   assert.match(CHANNEL, CHANNEL_PATTERN);
   assert.notEqual(CHANNEL, "/api", "`/api` 是保留的共享通道，只能 intercept 不能 handle");
-  assert.deepEqual([...ENDPOINTS], ["snapshot", "resolve", "edit", "settings"]);
+  assert.deepEqual([...ENDPOINTS], ["snapshot", "resolve", "edit", "settings", "audit.clear"]);
   for (const endpoint of ENDPOINTS) assert.match(endpoint, ENDPOINT_PATTERN);
 });
 
@@ -362,4 +362,51 @@ test("snapshot 带上当前上限与默认值（面板设置区要用）", async
   assert.equal(typeof result.value.limits.current.projectMaxBytes, "number");
   assert.equal(typeof result.value.limits.defaults.projectMaxBytes, "number");
   assert.equal(typeof result.value.limits.defaults.userMaxBytes, "number");
+});
+
+test("audit.clear：删掉目标行 + 写 clear 标记，且 snapshot 自检仍一致", async () => {
+  await seed();
+  const runsPath = join(memoryDir(), "runs.jsonl");
+  await writeFile(
+    runsPath,
+    [
+      JSON.stringify({ at: "2026-10-12T00:00:00Z", op: "save", id: "m001", topic: "indent" }),
+      JSON.stringify({ at: "2026-10-12T00:01:00Z", op: "save", id: "m002", topic: "indent" }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const result = await handler()("audit.clear", {
+    scope: "project",
+    at: "2026-10-12T00:00:00Z",
+    op: "save",
+    id: "m001",
+  });
+  assertOkEnvelope(result);
+  assert.equal(result.value.cleared, true);
+
+  const text = await readFile(runsPath, "utf8");
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  assert.equal(lines.length, 2, "删 1 行 + 加 1 clear 标记 = 2 行");
+  assert.equal(JSON.parse(lines[0]).op, "save");
+  assert.equal(JSON.parse(lines[0]).id, "m002", "原 m002 行还在");
+  assert.equal(JSON.parse(lines[1]).op, "clear");
+
+  // 记忆没动；清掉 m001 的 save 行后，clear 标记（origOp=save）压掉 missing —— 自检仍一致。
+  const snap = await handler()("snapshot", {});
+  const project = snap.value.scopes.find((s) => s.scope === "project");
+  assert.equal(project.replay.ok, true, "清掉 save 行后自检仍一致");
+});
+
+test("audit.clear：参数不合法时给机器可读错误码，不写盘", async () => {
+  await seed();
+  const runsPath = join(memoryDir(), "runs.jsonl");
+  await writeFile(runsPath, JSON.stringify({ at: "2026-10-12T00:00:00Z", op: "save", id: "m001" }) + "\n", "utf8");
+
+  assertFailEnvelope(await handler()("audit.clear", { scope: "galaxy", at: "x" }), "bad-scope");
+  assertFailEnvelope(await handler()("audit.clear", { scope: "project" }), "bad-target");
+
+  // 失败不该改写文件。
+  const text = await readFile(runsPath, "utf8");
+  assert.equal(text.includes('"op":"clear"'), false);
 });
