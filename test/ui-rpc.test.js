@@ -410,3 +410,22 @@ test("audit.clear：参数不合法时给机器可读错误码，不写盘", asy
   const text = await readFile(runsPath, "utf8");
   assert.equal(text.includes('"op":"clear"'), false);
 });
+
+test("audit.clear：目标行不存在时如实报失败，不谎报「已清除」", async () => {
+  await seed();
+  const runsPath = join(memoryDir(), "runs.jsonl");
+  await writeFile(runsPath, JSON.stringify({ at: "2026-10-12T00:00:00Z", op: "save", id: "m001" }) + "\n", "utf8");
+
+  // at 对不上任何一行 —— 面板上那条多半已经过期（比如刚被清过）。
+  const result = await handler()("audit.clear", {
+    scope: "project",
+    at: "2099-01-01T00:00:00Z",
+    op: "save",
+    id: "m001",
+  });
+  assertFailEnvelope(result, "audit-clear-missed");
+
+  // 原来那条记录仍在。
+  const text = await readFile(runsPath, "utf8");
+  assert.equal(text.includes('"at":"2026-10-12T00:00:00Z"'), true);
+});

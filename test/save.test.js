@@ -191,8 +191,7 @@ test("mode=update 保留旧条目的 area（工作空间标签不被抹掉）", 
   assert.equal(text.includes("area: "), false, "不该产生空 area");
 });
 
-test("mode=update 时旧条目没有 area，也不该凭空造一个", async () => {
-  const c = cfg();
+test("mode=update 时旧条目没有 area，也不该凭空造一个", async () => {  const c = cfg();
   await saveMemory({
     cfg: c,
     cwd,
@@ -534,4 +533,65 @@ test("文件确实被原子替换：写完不留下 .tmp 残渣", async () => {
   const files = (await readdir(dir)).sort();
   assert.deepEqual(files, ["MEMORY.md", "runs.jsonl"]);
   await stat(join(dir, "MEMORY.md"));
+});
+
+// ---- 失败分级：读失败不覆盖、审计失败要出声 ----
+
+test("读盘失败时中止写入，绝不把已有记忆覆盖成只剩这一条", async () => {
+  const c = cfg();
+  const paths = resolveMemoryPaths(cwd, "project", c);
+  // 先放一份正常记忆，再把它变成一个**目录** —— 这样 readText 会抛 EISDIR
+  // （不是 ENOENT，所以不会被当成「文件不存在」），精确模拟「读不出来」。
+  await mkdir(paths.dir, { recursive: true });
+  await writeFile(paths.file, "- 老记忆。<!-- id:m001 topic:a at:2026-10-01 -->\n", "utf8");
+  await rm(paths.file, { force: true });
+  await mkdir(paths.file, { recursive: true });
+
+  const result = await saveMemory({
+    cfg: c,
+    cwd,
+    input: { topic: "x", content: "新内容。", scope: "project" },
+  });
+
+  assert.equal(result.ok, false, "读失败必须明确失败");
+  assert.equal(result.action, "rejected");
+  assert.match(result.message, /读不到/);
+  assert.match(result.message, /中止/);
+
+  // 关键断言：目标仍然是那个目录，没被写成一个「只剩新条目」的文件。
+  const st = await stat(paths.file);
+  assert.equal(st.isDirectory(), true, "读失败不该改写目标 —— 否则就是静默清空记忆库");
+});
+
+test("审计写入失败时：记忆照样写入成功，但 message 里明确提示", async () => {
+  const c = cfg();
+  const paths = resolveMemoryPaths(cwd, "project", c);
+  // 把 runs.jsonl 变成一个目录 → appendFile 抛 EISDIR → appendRun 返回 false。
+  await mkdir(join(paths.dir, "runs.jsonl"), { recursive: true });
+
+  const result = await saveMemory({
+    cfg: c,
+    cwd,
+    input: { topic: "a", content: "A。", scope: "project" },
+  });
+
+  assert.equal(result.ok, true, "审计是旁路：写失败不阻断记忆操作");
+  assert.equal(result.action, "created");
+  assert.match(result.message, /审计未记录成功/);
+
+  // 记忆本身确实写进去了。
+  const entries = await entriesOf(c);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].content, "A。");
+});
+
+test("审计写入正常时 message 里不该出现审计缺口的提示", async () => {
+  const c = cfg();
+  const result = await saveMemory({
+    cfg: c,
+    cwd,
+    input: { topic: "a", content: "A。", scope: "project" },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.message.includes("审计未记录成功"), false);
 });

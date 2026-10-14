@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { resolveConfig } from "../lib/config.js";
 import { resolveMemoryPaths } from "../lib/paths.js";
 import {
+  loadScope,
   rankByKeywords,
   readMemory,
   renderEntries,
@@ -234,13 +235,16 @@ test("renderSnapshot 在冲突时附上计数摘要", async () => {
   assert.equal(sections.some((s) => s.name === "conflicts"), true);
 });
 
-test("readText 抛错时 fail-open：当作没有记忆，不抛出去", async () => {
+test("readText 抛错时不抛出去，而是把错误如实带回来（不静默成「没有记忆」）", async () => {
   const c = cfg();
   const readText = async () => {
     throw new Error("EACCES");
   };
   const out = await renderSnapshot({ cwd: CWD, cfg: c, readText });
-  assert.equal(out, undefined);
+  assert.notEqual(out, undefined);
+  assert.deepEqual(out.sections, []);
+  assert.equal(out.errors.length, 2);
+  assert.match(out.errors[0].message, /EACCES/);
 });
 
 test("signal 已中止时不再读盘", async () => {
@@ -321,13 +325,71 @@ test("readMemory scope=both（无 topic）复用整批快照排版，含冲突�
   assert.match(text, /用 npm。/);
 });
 
-test("readMemory 读盘抛错时 fail-open 返回 null", async () => {
+test("readMemory 读盘抛错时不再静默成「没有记忆」，而是明确告知读取失败", async () => {
   const c = cfg();
   const readText = async () => {
     throw new Error("EACCES");
   };
   const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText });
+  assert.notEqual(text, null, "读失败必须带回提示，不能等同于「没有记忆」");
+  assert.match(text, /\[记忆读取失败\]/);
+  assert.match(text, /EACCES/);
+  assert.match(text, /别把它当成「没有相关记忆」/);
+});
+
+test("readMemory 文件不存在（不是错误）时仍返回 null —— 别把「没有记忆」报成读失败", async () => {
+  const c = cfg();
+  const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText: async () => null });
   assert.equal(text, null);
+});
+
+test("readMemory：单作用域读失败时也带提示（轻量路径）", async () => {
+  const c = cfg();
+  const readText = async () => {
+    throw new Error("EPERM");
+  };
+  const text = await readMemory({ cwd: CWD, scope: "project", cfg: c, readText, keywords: "pnpm" });
+  assert.notEqual(text, null);
+  assert.match(text, /\[记忆读取失败\]/);
+  assert.match(text, /EPERM/);
+});
+
+test("readMemory：一个作用域读失败、另一个正常时，正常内容照常返回 + 附提示", async () => {
+  const c = cfg({ userMemoryDir: "/tmp/user-mem" });
+  const readText = async (p) => {
+    if (p.includes("user-mem")) throw new Error("EACCES");
+    return "- 用 npm。<!-- id:m001 topic:pm at:2026-10-01 -->";
+  };
+  const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText, keywords: "npm" });
+  assert.match(text, /用 npm。/, "读得到的那个作用域照常返回");
+  assert.match(text, /\[记忆读取失败\]/, "读失败的那个作用域要被点名");
+});
+
+test("loadScope 把「读失败」和「没有文件」分开报", async () => {
+  const c = cfg();
+  const boom = await loadScope(CWD, "project", c, async () => {
+    throw new Error("EACCES");
+  });
+  assert.equal(boom.parsed, null);
+  assert.match(boom.error, /读取失败/);
+
+  const absent = await loadScope(CWD, "project", c, async () => null);
+  assert.equal(absent.parsed, null);
+  assert.equal(absent.error, null, "文件不存在是正常状态，不是错误");
+});
+
+test("renderSnapshot：只有读失败、没有任何内容时也返回对象（好让调用方讲出来）", async () => {
+  const c = cfg();
+  const out = await renderSnapshot({
+    cwd: CWD,
+    cfg: c,
+    readText: async () => {
+      throw new Error("EACCES");
+    },
+  });
+  assert.notEqual(out, undefined);
+  assert.deepEqual(out.sections, []);
+  assert.equal(out.errors.length, 2, "两个作用域都读失败");
 });
 
 // ---- 关键词检索（memory_read 的 keywords 参数）----
