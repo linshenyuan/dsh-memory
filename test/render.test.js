@@ -5,10 +5,12 @@ import { test } from "node:test";
 import { resolveConfig } from "../lib/config.js";
 import { resolveMemoryPaths } from "../lib/paths.js";
 import {
+  rankByKeywords,
   readMemory,
   renderEntries,
   renderSnapshot,
   renderScope,
+  splitKeywords,
   usageLabel,
 } from "../lib/render.js";
 
@@ -326,4 +328,139 @@ test("readMemory 读盘抛错时 fail-open 返回 null", async () => {
   };
   const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText });
   assert.equal(text, null);
+});
+
+// ---- 关键词检索（memory_read 的 keywords 参数）----
+
+test("splitKeywords 按空白 / 逗号 / 顿号 / 分号切分并归一化、去重", () => {
+  assert.deepEqual(splitKeywords("pnpm  缓存, lockfile、monorepo；"), ["pnpm", "缓存", "lockfile", "monorepo"]);
+  // 标点和大小写被归一化掉 —— 口径和去重指纹同一套。
+  assert.deepEqual(splitKeywords("PostgreSQL-17!"), ["postgresql17"]);
+  // 去重：两次同一 key 只留一个。
+  assert.deepEqual(splitKeywords("pnpm pnpm,pnpm"), ["pnpm"]);
+  // 空 / 非字符串 / 纯分隔符都不产出词。
+  assert.deepEqual(splitKeywords(""), []);
+  assert.deepEqual(splitKeywords("  ,， "), []);
+  assert.deepEqual(splitKeywords(null), []);
+  assert.deepEqual(splitKeywords(42), []);
+});
+
+test("rankByKeywords：命中 topic 的排在命中正文的前面", () => {
+  const ranked = rankByKeywords(
+    [
+      entry({ id: "m001", topic: "other", content: "我们决定用 pnpm。" }),
+      entry({ id: "m002", topic: "pnpm", content: "包管理器。" }),
+    ],
+    splitKeywords("pnpm"),
+  );
+  assert.deepEqual(
+    ranked.map((e) => e.id),
+    ["m002", "m001"],
+    "m002 命中 topic（3 分）应先于 m001 只命中正文（1 分）",
+  );
+});
+
+test("rankByKeywords：命中多个词的排在命中单个词的前面", () => {
+  const ranked = rankByKeywords(
+    [
+      entry({ id: "m001", topic: "a", content: "pnpm。" }),
+      entry({ id: "m002", topic: "b", content: "pnpm 缓存。" }),
+    ],
+    splitKeywords("pnpm 缓存"),
+  );
+  assert.deepEqual(
+    ranked.map((e) => e.id),
+    ["m002", "m001"],
+  );
+});
+
+test("rankByKeywords：一个词都没命中的条目被丢掉", () => {
+  const ranked = rankByKeywords(
+    [entry({ id: "m001", topic: "a", content: "npm。" })],
+    splitKeywords("pnpm"),
+  );
+  assert.deepEqual(ranked, []);
+});
+
+test("rankByKeywords：keywords 为空时原样返回（等于不过滤）", () => {
+  const entries = [entry({ id: "m001" }), entry({ id: "m002" })];
+  assert.equal(rankByKeywords(entries, []), entries);
+});
+
+test("rankByKeywords：并列时确定性排序（at 新的在前）", () => {
+  const ranked = rankByKeywords(
+    [
+      entry({ id: "m001", topic: "x", at: "2026-10-01", content: "pnpm。" }),
+      entry({ id: "m002", topic: "x", at: "2026-10-09", content: "pnpm。" }),
+    ],
+    splitKeywords("pnpm"),
+  );
+  assert.deepEqual(ranked.map((e) => e.id), ["m002", "m001"]);
+});
+
+test("readMemory：keywords 按内容命中，想不起 topic 也能捞到", async () => {
+  const c = cfg();
+  const readText = async () =>
+    [
+      "- 用 npm。<!-- id:m001 topic:pkg at:2026-10-01 -->",
+      "- 包管理器换成 pnpm 了，理由是 monorepo 支持。<!-- id:m002 topic:pkg-manager at:2026-10-02 -->",
+    ].join("\n");
+  // 只记得内容里有 pnpm，不知道 topic 叫什么。
+  const text = await readMemory({ cwd: CWD, scope: "project", cfg: c, readText, keywords: "pnpm" });
+  assert.match(text, /包管理器换成 pnpm 了/);
+  assert.equal(text.includes("用 npm。"), false);
+});
+
+test("readMemory：keywords 与 topic 可叠加（先精确再排序）", async () => {
+  const c = cfg();
+  const readText = async () =>
+    [
+      "- A。<!-- id:m001 topic:pm at:2026-10-01 -->",
+      "- B。<!-- id:m002 topic:pm at:2026-10-02 -->",
+      "- C。<!-- id:m003 topic:other at:2026-10-03 -->",
+    ].join("\n");
+  const text = await readMemory({ cwd: CWD, scope: "project", cfg: c, readText, topic: "pm", keywords: "B" });
+  assert.match(text, /- B。/);
+  assert.equal(text.includes("- A。"), false, "topic 先筛掉了不相关主题");
+  assert.equal(text.includes("- C。"), false);
+});
+
+test("readMemory：keywords 命中后仍走打码 → 截断那条链（不新开绕过打码的路）", async () => {
+  const c = cfg();
+  const readText = async () =>
+    "- 部署 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789，配 pnpm 用。<!-- id:m001 topic:deploy at:2026-10-01 -->";
+  const text = await readMemory({ cwd: CWD, scope: "project", cfg: c, readText, keywords: "pnpm" });
+  assert.match(text, /sk-\*\*\*/, "关键词命中的内容照样被打码");
+  assert.equal(text.includes("sk-abcdefghijklmnopqrstuvwxyz0123456789"), false);
+  // 复用了 renderScope，所以 usage 表头也在。
+  assert.match(text, /usage="\d+% \(\d+\/\d+ bytes\)"/);
+});
+
+test("readMemory：keywords 一条都没命中时返回 null", async () => {
+  const c = cfg();
+  const readText = async () => "- 用 npm。<!-- id:m001 topic:pkg at:2026-10-01 -->";
+  const text = await readMemory({ cwd: CWD, scope: "project", cfg: c, readText, keywords: "zebra" });
+  assert.equal(text, null);
+});
+
+test("readMemory：只给关键词、不给 topic 时附不上冲突摘要（查一部分不添乱）", async () => {
+  const c = cfg();
+  const readText = async () =>
+    [
+      "- 用 npm。<!-- id:m001 topic:pm at:2026-10-01 -->",
+      "- [待裁决] 用 pnpm。<!-- id:m002 topic:pm at:2026-10-12 conflict-with:m001 -->",
+    ].join("\n");
+  const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText, keywords: "npm" });
+  assert.equal(text.includes("<conflicts"), false);
+  assert.match(text, /用 npm。/);
+  // 待裁决那条没命中关键词，不该出现（且 freeze 本来也会过滤它）。
+  assert.equal(text.includes("用 pnpm。"), false);
+});
+
+test("readMemory：scope=both + 无过滤仍走整批快照（没被关键词参数改动破坏）", async () => {
+  const c = cfg();
+  const readText = async (p) =>
+    p.includes(".memory") ? "- 用 npm。<!-- id:m001 topic:pm at:2026-10-01 -->" : null;
+  const text = await readMemory({ cwd: CWD, scope: "both", cfg: c, readText, keywords: null });
+  assert.match(text, /^<memory>/, "一个过滤条件都没有时仍复用整批快照排版");
 });

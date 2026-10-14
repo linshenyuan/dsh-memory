@@ -290,15 +290,21 @@ test("注册了 memory_save（写）与 memory_read（读）两个工具", () =>
     );
   }
 
-  // memory_read：仅 scope 必填，topic 可选。
+  // memory_read：仅 scope 必填，topic / keywords 都可选。
   const read = tools.find((t) => t.name === "memory_read");
-  assert.deepEqual(Object.keys(read.parameters).sort(), ["scope", "topic"]);
+  assert.deepEqual(Object.keys(read.parameters).sort(), ["keywords", "scope", "topic"]);
   assert.equal(read.parameters.scope.required, true);
-  assert.equal(
-    Object.hasOwn(read.parameters.topic, "required"),
-    false,
-    "memory_read 的 topic 是可选参数，不该带 required",
-  );
+  // 可选参数**省略** `required`（DSH 的 value-schema DSL 只认 `required: true`）。
+  for (const name of ["topic", "keywords"]) {
+    assert.equal(
+      Object.hasOwn(read.parameters[name], "required"),
+      false,
+      `memory_read 的 ${name} 是可选参数，不该带 required`,
+    );
+  }
+  // keywords 必须是**字符串**：数组写法的 DSL 支持度在本仓库验证不了，写错只会在
+  // 装进真 DSH 时表现为「插件启动失败」。
+  assert.equal(read.parameters.keywords.type, "string");
 });
 
 test("工具描述里必须写清「什么时候不要写」和「不确定就别写」", () => {
