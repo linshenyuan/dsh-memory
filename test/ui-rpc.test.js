@@ -62,6 +62,11 @@ async function seed() {
   );
 }
 
+/** 面板设置的覆盖文件（临时路径，别碰真实 $DSH_HOME）。 */
+function settingsFile() {
+  return join(root, "dsh-memory.settings.json");
+}
+
 /** 造一个处理器。 */
 function handler({ cwd = root } = {}) {
   return createRpcHandler({
@@ -69,6 +74,7 @@ function handler({ cwd = root } = {}) {
     cfg,
     readText,
     writeText: writeAtomic,
+    settingsFile: settingsFile(),
   });
 }
 
@@ -94,7 +100,7 @@ function assertFailEnvelope(result, code) {
 test("channel 与端点名都符合宿主的准入规则", () => {
   assert.match(CHANNEL, CHANNEL_PATTERN);
   assert.notEqual(CHANNEL, "/api", "`/api` 是保留的共享通道，只能 intercept 不能 handle");
-  assert.deepEqual([...ENDPOINTS], ["snapshot", "resolve", "edit"]);
+  assert.deepEqual([...ENDPOINTS], ["snapshot", "resolve", "edit", "settings"]);
   for (const endpoint of ENDPOINTS) assert.match(endpoint, ENDPOINT_PATTERN);
 });
 
@@ -289,4 +295,71 @@ test("聚合层本身炸了也是 ok:false（而不是把异常抛穿 RPC 层）
   // collectPanelData 逐作用域兜底，所以这里其实是「成功但每个作用域都带 error」。
   assertOkEnvelope(result);
   assert.equal(result.value.scopes.every((s) => s.error !== null), true);
+});
+
+test("settings：保存上限 → 落盘 + 就地改 cfg（立即生效）", async () => {
+  const c = resolveConfig({
+    projectMemoryDir: memoryDir(),
+    userMemoryDir: join(root, "user-memory"),
+  });
+  const h = createRpcHandler({
+    getCwd: () => root,
+    cfg: c,
+    readText,
+    writeText: writeAtomic,
+    settingsFile: settingsFile(),
+  });
+
+  await rm(settingsFile(), { force: true });
+  const result = await h("settings", { projectMaxBytes: 4096, userMaxBytes: 8192 });
+  assertOkEnvelope(result);
+  assert.equal(result.value.projectMaxBytes, 4096);
+  assert.equal(result.value.userMaxBytes, 8192);
+
+  // 立即生效：共享的 cfg 对象被就地改了 —— 工具 / 面板 / 钩子持有的是同一个引用。
+  assert.equal(c.projectMaxBytes, 4096);
+  assert.equal(c.userMaxBytes, 8192);
+
+  // 也落了盘，下次启动还在。
+  const saved = JSON.parse(await readFile(settingsFile(), "utf8"));
+  assert.deepEqual(saved, { projectMaxBytes: 4096, userMaxBytes: 8192 });
+});
+
+test("settings：参数非法 → 拒绝，且不写盘、不改 cfg", async () => {
+  const c = resolveConfig({
+    projectMemoryDir: memoryDir(),
+    userMemoryDir: join(root, "user-memory"),
+  });
+  const h = createRpcHandler({
+    getCwd: () => root,
+    cfg: c,
+    readText,
+    writeText: writeAtomic,
+    settingsFile: settingsFile(),
+  });
+  await rm(settingsFile(), { force: true });
+  const before = { ...c };
+
+  for (const payload of [
+    {}, // 两个都没给
+    { projectMaxBytes: 4096 }, // 少一个
+    { projectMaxBytes: "4096", userMaxBytes: 4096 }, // 字符串（不做隐式转换）
+    { projectMaxBytes: 1, userMaxBytes: 4096 }, // 低于下限
+    { projectMaxBytes: 4096, userMaxBytes: 1e9 }, // 高于上限
+  ]) {
+    const result = await h("settings", payload);
+    assertFailEnvelope(result, "bad-limits");
+    assert.equal(c.projectMaxBytes, before.projectMaxBytes, "非法参数不该改 cfg");
+    assert.equal(c.userMaxBytes, before.userMaxBytes, "非法参数不该改 cfg");
+  }
+  await assert.rejects(() => readFile(settingsFile(), "utf8"), "非法参数不该写盘");
+});
+
+test("snapshot 带上当前上限与默认值（面板设置区要用）", async () => {
+  await seed();
+  const result = await handler()("snapshot", {});
+  assertOkEnvelope(result);
+  assert.equal(typeof result.value.limits.current.projectMaxBytes, "number");
+  assert.equal(typeof result.value.limits.defaults.projectMaxBytes, "number");
+  assert.equal(typeof result.value.limits.defaults.userMaxBytes, "number");
 });

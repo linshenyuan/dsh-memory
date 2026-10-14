@@ -135,7 +135,7 @@ A / B 的定义是确定的：按 `at` 升序排，**A = 最早那条**（通常
 | 视图 | 看什么 |
 | --- | --- |
 | 浏览 | 作用域用一排次级 tab 切换（用户 / 项目）：**项目**先按「工作空间」分区、每区内再按段分组，**用户**直接按段分组。每条含 `topic` / 日期 / 正文，**可编辑 / 删除**；tab 排右侧的「**新建+**」小方框切出新增表单，写进当前选中的那个作用域 |
-| 用量 | 每个作用域的字节占用与上限比例条、条目数、待裁决数、分类分布 |
+| 用量 | 顶部一张**总览卡**（总占用 `9.8 KB /47% 已用` + 条目 / 待裁决 / 审计 runs 三个计数），下面两个作用域卡**并排**（窄了自动回落单列），各带占用条与**分类分布**（列表限高滚动，段多也不撑高卡片）；总览卡「已用」后面的「**设置**」小胶囊点开可就地改两个记忆上限 |
 | 冲突 | 每个冲突一张卡片 + 四个裁决按钮（见上） |
 | 审计 | `runs.jsonl` 的时间线，以及启动自检「流水与文件是否一致」的结论 |
 
@@ -145,11 +145,14 @@ A / B 的定义是确定的：按 `at` 升序排，**A = 最早那条**（通常
 
 ### 数据怎么从磁盘走到浏览器
 
-浏览器里的面板和磁盘上的文件之间只有一条通道：宿主侧在 `webServer` 上挂一条 `/dsh-memory` 前缀路由，浏览器侧 `ctx.connection.rpc.call("/dsh-memory", "snapshot" | "resolve" | "edit", payload)` 发一条 POST 过去。三个端点：
+浏览器里的面板和磁盘上的文件之间只有一条通道：宿主侧在 `webServer` 上挂一条 `/dsh-memory` 前缀路由，浏览器侧 `ctx.connection.rpc.call("/dsh-memory", "snapshot" | "resolve" | "edit" | "settings", payload)` 发一条 POST 过去。四个端点：
 
 - `snapshot` —— 返回一次聚合结果，四个视图共用（`lib/ui/data.js`）
 - `resolve` —— 执行一次裁决（`lib/ui/resolve.js`）
 - `edit` —— 自由编辑：新增 / 修改 / 删除一条（`lib/ui/write.js`），行级编辑、不重写整个文件，并记 `by:"user"` 的审计
+- `settings` —— 改两个记忆上限（`lib/settings.js`）：校验 → 落盘 → **就地改共享的 `cfg` 对象**（见下）
+
+**面板改的上限存在哪、为什么不用重启。** 值写进 `$DSH_HOME/dsh-memory.settings.json`（`lib/settings.js`）—— 这是**插件自管**的文件，不去动 DSH 的 profile 配置（那有被覆盖、注释丢失的风险）。合并顺序是 `DEFAULTS` ← `cordis.patch.yml` ← 这份覆盖文件，**面板优先**：你在插件配置里改过、又在面板里改，面板赢。生效靠的是「就地改那个共享的 `cfg` 对象」—— 工具、面板、钩子拿到的是**同一个引用**，所以改完立刻生效，不用重启。这个文件只认 `projectMaxBytes` / `userMaxBytes` 两个键，越权的键一律忽略。
 
 **为什么自己挂路由，而不是 `ctx.connection.rpc.handle(...)`：** 后者在当前 DSH 版本里**必然抛错**。`HostConnectionService.rpc.handle` 内部走的是 `this.ctx`（连接服务自己的 context），而那个服务的 `inject` 只有 `["credentials"]` —— 在 cordis 里读一个没 inject 的服务会抛 `cannot get property without inject`。于是路由永远挂不上，浏览器 POST 落到 SPA 静态兜底，面板上只显示一行 `transport failure for /dsh-memory/snapshot: HTTP 405`。对照 `/api` 那条路由是好的：它在 `ctx.inject(["webServer"], …)` 里用**自己的** `webCtx.webServer` 注册。
 
@@ -309,6 +312,7 @@ npm test
 - `ui-data` / `ui-resolve` / `ui-write` / `ui-rpc` / `ui-route` —— **面板各层**：聚合只读且四视图同源、A/B 定义与写回一致、`later` 不落痕迹、自由编辑的行级写回与 `by:"user"` 审计、审计记录能被 `replay` 读懂、端点信封形状严格、载荷里的 `cwd` 被忽略、HTTP 传输的状态码与信封形状（404 / 415 / 400 / `gateway/bad-request` / 500 / 200）与栅栏分支
 - `client-bundle` —— **客户端 bundle 格式**，在 `node:vm` 沙箱里把 `lib/client.js` 真跑一遍：注册形状、`id` 等于包名、无 ESM 语句、`require` 全部命中静态种子、槽注册参数、中英字典键集一致、CSS 只用主题变量
 - `lock` / `concurrency` —— **并发写入**：锁的串行化语义（后者等前者完全结束、不同 key 不互阻、出错不卡队列、空闲不泄漏），以及真实文件 IO 下的并发回归（两个入口同时新增不同条目 → 两条都必须留下、id 不撞）。这两组是「去掉锁就变红」的，刻意如此
+- `settings` —— **面板设置的存储**：`$DSH_HOME` 下的路径、只认两个上限键（越权键丢掉）、合并写而不是覆盖、坏文件 fail-open、以及「面板覆盖优先于 DSH 配置」的合并顺序
 
 最有价值的是 `save` / `index` / `manifest` / `client-bundle` / `tool` 这几个：`save` 覆盖所有真实行为；`index` 抓「装进 DSH 之后才发现没生效」（section 名字写错、`order` 撞车、忘了 `interpolate: false`、钩子签名不对、声明了 form 却给不齐字段）；`manifest` 抓「图标和标题静默消失」；`client-bundle` 抓「设置页里干脆没有这一项」；`tool` 抓「工具参数写法违反 DSL，插件启动失败」——这一类失败全都**不报错**，只会静默地少一块。
 
@@ -358,6 +362,7 @@ lib/
   truncate.js    按 UTF-8 字节的安全截断
   store.js       原子读写
   lock.js        进程内「按文件串行化」锁（防并发读改写丢更新）
+  settings.js    面板改的值（记忆上限）存哪、怎么合并（$DSH_HOME 下覆盖文件）
   audit.js       审计流水与回放
   conflicts.js   CONFLICTS.md 与冲突摘要渲染
   client.js      【浏览器半侧】设置页的记忆面板（手写 client bundle）
