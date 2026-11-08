@@ -15,7 +15,7 @@ import { after, before, test } from "node:test";
 register("./loader.mjs", import.meta.url);
 
 const mod = await import("../lib/index.js");
-const { apply, Config, inject, name } = mod;
+const { apply, Config, inject, name, PANEL_CWD_FILE } = mod;
 const { MEMORY_RULES } = await import("../lib/guide.js");
 
 let root = "";
@@ -751,6 +751,9 @@ test("面板 RPC：缺 connection 或 webServer 时安静跳过，插件照常�
 
 test("面板 RPC：工作目录来自最近一次会话，面板自己不能指定", async () => {
   const dir = await mkdtemp(join(root, "rpc-cwd-"));
+  // 前面的用例跑过 pre-step，会在 $DSH_HOME 里写下上次会话目录；
+  // 这个用例测的是「从来没有任何会话」，先把状态文件清掉。
+  await rm(join(process.env.DSH_HOME, PANEL_CWD_FILE), { force: true });
   const { ctx, handlers, routes } = fakeCtx();
   apply(ctx, { projectMemoryDir: join(dir, "mem"), verifyOnStart: false });
 
@@ -776,4 +779,16 @@ test("面板 RPC：工作目录来自最近一次会话，面板自己不能指�
   const later = await call("snapshot", { cwd: "D:/某个不存在的路径" });
   assert.equal(later.ok, true);
   assert.equal(later.value.cwd, cwd, "必须用宿主记的 cwd，不能听载荷里的");
+
+  // 模拟 DSH 重启：新的 apply 还没跑过任何 pre-step，也应当从磁盘恢复上次会话的
+  // 工作区 —— 否则「设置 → 记忆」会在每次重启后先空着，逼用户先开一轮会话。
+  const restarted = fakeCtx();
+  apply(restarted.ctx, { projectMemoryDir: join(dir, "mem"), verifyOnStart: false });
+  const restartRoute = restarted.routes.get("/dsh-memory");
+  const { req, res } = fakeHttpExchange("snapshot", {});
+  await restartRoute.handler(req, res);
+  assert.equal(res.status, 200);
+  const afterRestart = res.result();
+  assert.equal(afterRestart.ok, true);
+  assert.equal(afterRestart.value.cwd, cwd);
 });
